@@ -12,7 +12,7 @@ st.caption("Upload Base and Validation files to generate the validation report E
 
 with st.sidebar:
     st.header("Inputs")
-    mapping_default_path = "/Path/To/Mapping.csv"
+    mapping_default_path = "/sample_data/mapping.csv"
     mapping_path = st.text_input("Mapping CSV path (optional)", value=mapping_default_path)
     mapping_upload = st.file_uploader("Or upload mapping CSV", type=["csv"])
 
