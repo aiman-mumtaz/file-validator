@@ -52,6 +52,15 @@ if generate:
         st.error("Please upload both Base and Validation files.")
         st.stop()
 
+    # add progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    def update_progress(percentage, text):
+        """Callback function passed to report_generator."""
+        progress_bar.progress(percentage)
+        status_text.text(text)
+    
     try:
         if mapping_upload is not None:
             logger.info(f"Using uploaded mapping file: {mapping_upload.name}")
@@ -74,7 +83,10 @@ if generate:
             validation_stream = io.TextIOWrapper(io.BytesIO(validation_upload.getvalue()), encoding="utf-8", errors="ignore")
 
             with base_stream, validation_stream:
-                excel_bytes, summary = generate_excel_report(mapping_stream, base_stream, validation_stream)
+                excel_bytes, summary = generate_excel_report(mapping_stream, base_stream, validation_stream, progress_callback=update_progress)
+
+        progress_bar.empty();
+        status_text.empty();
         
         timestamp = summary['timestamp']
         filename = f"Validation_Report_{timestamp}.xlsx"
@@ -105,7 +117,11 @@ if generate:
     except ValidationError as exc:
         logger.warning(f"Business Logic Validation Error: {str(exc)}")
         st.error(str(exc))
+        progress_bar.empty()
+        status_text.empty()
     except Exception as exc:
         # stack trace
         logger.exception("A critical unexpected error occurred during report generation.")
         st.error(f"Unexpected error: {exc}")
+        progress_bar.empty()
+        status_text.empty()
