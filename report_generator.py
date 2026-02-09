@@ -173,38 +173,50 @@ def create_record_signature(claim: dict) -> Tuple[str, ...]:
     )
 
 
-def _read_claims(lines: Iterable[str], field_mapping: Dict[str, dict]) -> List[dict]:
+def _read_claims(lines: List[str], field_mapping: Dict[str, dict], progress_callback: Callable = None, stage_name: str = "Parsing") -> List[dict]:
     claims = []
+    total_lines = len(lines)
+    
     for line_num, line in enumerate(lines, 1):
         if line.startswith('4'):
             claim = parse_claim_with_mapping(line, field_mapping)
             if claim:
                 claim['Line_Number'] = line_num
                 claims.append(claim)
+
+        if progress_callback and line_num % 100 == 0:
+            progress = line_num / total_lines
+            progress_callback(progress, f"{stage_name}: Row {line_num} of {total_lines}")
+            
     return claims
 
-
-def _compare_claims(base_claims: List[dict], validation_claims: List[dict], field_mapping: Dict[str, dict]) -> Tuple[List[dict], List[Tuple[int, dict]], List[Tuple[int, dict]], dict, List[str]]:
+def _compare_claims(base_claims: List[dict], validation_claims: List[dict], field_mapping: Dict[str, dict], progress_callback: Callable = None) -> Tuple[List[dict], List[Tuple[int, dict]], List[Tuple[int, dict]], dict, List[str]]:
     base_lookup = {create_record_signature(claim): (idx, claim) for idx, claim in enumerate(base_claims)}
     validation_lookup = {create_record_signature(claim): (idx, claim) for idx, claim in enumerate(validation_claims)}
 
     value_differences = []
     missing_in_validation = []
     extra_in_validation = []
-
+    
+    total_to_compare = len(base_lookup)
+    
     signature_fields = {
-        'RX CLAIMS NUMBER',
-        'CLAIM STATUS',
-        'SEQUENCE NUMBER OF CLAIM',
-        'PATIENT FIRST NAME',
-        'PATIENT LAST NAME',
-        'PATIENT DATE OF BIRTH',
-    }
-
+            'RX CLAIMS NUMBER',
+            'CLAIM STATUS',
+            'SEQUENCE NUMBER OF CLAIM',
+            'PATIENT FIRST NAME',
+            'PATIENT LAST NAME',
+            'PATIENT DATE OF BIRTH',
+        }
+    
     compare_fields = [field for field in field_mapping.keys() if field not in signature_fields]
-
-    for signature in base_lookup:
+    
+    for i, signature in enumerate(base_lookup):
         base_idx, base_claim = base_lookup[signature]
+        
+        if progress_callback and i % 50 == 0:
+            progress = (i + 1) / total_to_compare
+            progress_callback(progress, f"Comparing: Record {i+1} of {total_to_compare}")
 
         if signature in validation_lookup:
             _, validation_claim = validation_lookup[signature]
@@ -247,18 +259,24 @@ def _compare_claims(base_claims: List[dict], validation_claims: List[dict], fiel
         field = diff['Field']
         differences_by_field.setdefault(field, []).append(diff)
 
-    return value_differences, missing_in_validation, extra_in_validation, differences_by_field, compare_fields
+    return value_differences, missing_in_validation, extra_in_validation, differences_by_field, compare_fields 
 
 
 def generate_excel_report(
     mapping_stream: io.TextIOBase,
     base_stream: io.TextIOBase,
     validation_stream: io.TextIOBase,
-    timestamp: str | None = None
+    timestamp: str | None = None,
+    progress_callback: Callable = None
 ) -> Tuple[bytes, dict]:
+    
     field_mapping = _load_field_mapping(mapping_stream)
-    base_claims = _read_claims(base_stream, field_mapping)
-    validation_claims = _read_claims(validation_stream, field_mapping)
+    
+    base_lines = base_stream.readlines()
+    val_lines = validation_stream.readlines()
+
+    base_claims = _read_claims(base_lines, field_mapping, progress_callback, "Parsing Base File")
+    validation_claims = _read_claims(val_lines, field_mapping, progress_callback, "Parsing Validation File")
 
     (
         value_differences,
@@ -266,7 +284,10 @@ def generate_excel_report(
         extra_in_validation,
         differences_by_field,
         _
-    ) = _compare_claims(base_claims, validation_claims, field_mapping)
+    ) = _compare_claims(base_claims, validation_claims, field_mapping, progress_callback)
+
+    if progress_callback:
+        progress_callback(0.95, "Generating Excel Workbook...")
 
     wb = Workbook()
 
@@ -403,6 +424,9 @@ def generate_excel_report(
     wb.save(output)
     output.seek(0)
 
+    if progress_callback:
+        progress_callback(1.0, "Report Complete!")
+
     if not timestamp:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -415,5 +439,5 @@ def generate_excel_report(
         'missing_in_validation': len(missing_in_validation),
         'extra_in_validation': len(extra_in_validation),
     }
-
+    
     return output.getvalue(), summary
