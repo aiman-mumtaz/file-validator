@@ -11,7 +11,6 @@ This project provides a reusable framework to compare fixed-width file outputs b
 
 ### Tech Stack
 •⁠  ⁠Python
-•⁠  ⁠Pandas
 •⁠  ⁠Streamlit
 •⁠  ⁠OpenPyXL
 
