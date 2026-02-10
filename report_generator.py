@@ -1,11 +1,14 @@
 import csv
 import io
+import logging
 import re
 from datetime import datetime
 from typing import Dict, Iterable, List, Tuple
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
+
+logger = logging.getLogger(__name__)
 
 OVERPUNCH_POSITIVE = {
     '{': '0', 'A': '1', 'B': '2', 'C': '3', 'D': '4',
@@ -21,57 +24,103 @@ class ValidationError(Exception):
     pass
 
 
+def _normalize_header(value: str) -> str:
+    return re.sub(r'[^a-z0-9]', '', value.strip().lower()) if value else ''
+
+
+def _parse_bool(value: str) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower() in {'true', 'yes', 'y', '1'}
+
+
+def _parse_master_seq(value: str) -> int | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+    try:
+        return int(float(cleaned))
+    except ValueError:
+        return None
+
+
 def _load_field_mapping(mapping_stream: io.TextIOBase) -> Dict[str, dict]:
     field_mapping: Dict[str, dict] = {}
     reader = csv.DictReader(mapping_stream)
+    header_map = { _normalize_header(name): name for name in (reader.fieldnames or []) }
+    logger.info("Mapping headers detected: %s", ", ".join(reader.fieldnames or []))
+
+    def get_field(row: dict, *candidates: str) -> str | None:
+        for candidate in candidates:
+            key = header_map.get(_normalize_header(candidate))
+            if key and key in row:
+                return row.get(key)
+        for candidate in candidates:
+            if candidate in row:
+                return row.get(candidate)
+        return None
+
     for row in reader:
         try:
-            if row.get('Master Seq No') != '4':
+            master_seq_val = _parse_master_seq(get_field(row, 'Master Seq No', 'MasterSeqNo', 'Master Sequence No'))
+            if master_seq_val != 4:
                 continue
-            field_name = row.get('Field Name')
-            field_format = row.get('Field Format')
-            field_length = int(row['Field Length']) if row.get('Field Length') else 0
-            is_numerical = row.get('IsNumericalFormat') == 'TRUE'
-            is_overpunch = row.get('IsOverpunchFormat') == 'TRUE'
-            format_spec = row.get('Format') if row.get('Format') and row.get('Format') != 'null' else None
 
-            start_pos = row.get('start', '')
-            end_pos = row.get('end', '')
+            field_name = get_field(row, 'Field Name', 'FieldName')
+            field_format = get_field(row, 'Field Format', 'FieldFormat')
+            field_length_raw = get_field(row, 'Field Length', 'FieldLength')
+            field_length = int(field_length_raw) if field_length_raw else 0
 
-            apply_alpha_pad = row.get('applyAlphaPad', '')
-            apply_alpha_len = row.get('applyAlphaLen', '')
-            apply_numeric_pad = row.get('applyNumericPad', '')
-            apply_numeric_len = row.get('applyNumericLen', '')
+            is_numerical = _parse_bool(get_field(row, 'IsNumericalFormat', 'IsNumerical'))
+            is_overpunch = _parse_bool(get_field(row, 'IsOverpunchFormat', 'IsOverpunch'))
+            format_spec = get_field(row, 'Format', 'FieldFormatSpec')
+            if format_spec and str(format_spec).strip().lower() == 'null':
+                format_spec = None
+
+            start_pos = get_field(row, 'start', 'Start', 'Start Position', 'StartPosition')
+            end_pos = get_field(row, 'end', 'End', 'End Position', 'EndPosition')
+
+            apply_alpha_pad = get_field(row, 'applyAlphaPad', 'ApplyAlphaPad') or ''
+            apply_alpha_len = get_field(row, 'applyAlphaLen', 'ApplyAlphaLen') or ''
+            apply_numeric_pad = get_field(row, 'applyNumericPad', 'ApplyNumericPad') or ''
+            apply_numeric_len = get_field(row, 'applyNumericLen', 'ApplyNumericLen') or ''
 
             if field_length > 0 and field_name and start_pos and end_pos:
                 decimal_places = 0
-                if format_spec and 'V' in format_spec:
-                    match = re.search(r'V9+', format_spec)
+                if format_spec and 'V' in str(format_spec):
+                    match = re.search(r'V9+', str(format_spec))
                     if match:
                         decimal_places = len(match.group()) - 1
 
-                alpha_pad_len = int(apply_alpha_len) if apply_alpha_len and apply_alpha_len.isdigit() else 0
-                numeric_pad_len = int(apply_numeric_len) if apply_numeric_len and apply_numeric_len.isdigit() else 0
+                alpha_pad_len = int(apply_alpha_len) if str(apply_alpha_len).isdigit() else 0
+                numeric_pad_len = int(apply_numeric_len) if str(apply_numeric_len).isdigit() else 0
 
-                field_mapping[field_name] = {
+                field_mapping[str(field_name).strip()] = {
                     'format': field_format,
                     'length': field_length,
                     'is_numerical': is_numerical,
                     'is_overpunch': is_overpunch,
                     'decimal_places': decimal_places,
                     'format_spec': format_spec,
-                    'start': int(start_pos) - 1,
-                    'end': int(end_pos),
+                    'start': int(float(start_pos)) - 1,
+                    'end': int(float(end_pos)),
                     'alpha_pad_field': apply_alpha_pad,
                     'alpha_pad_len': alpha_pad_len,
                     'numeric_pad_field': apply_numeric_pad,
                     'numeric_pad_len': numeric_pad_len
                 }
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, TypeError):
             continue
 
     if not field_mapping:
-        raise ValidationError("No field mappings found in CSV. Verify the mapping file format.")
+        found_headers = ', '.join(reader.fieldnames or [])
+        logger.error("No field mappings found in CSV. Headers: %s", found_headers or 'none')
+        raise ValidationError(
+            "No field mappings found in CSV. Verify the mapping file format. "
+            f"Found headers: {found_headers or 'none'}"
+        )
 
     return field_mapping
 
@@ -173,121 +222,104 @@ def create_record_signature(claim: dict) -> Tuple[str, ...]:
     )
 
 
-def _read_claims(lines: List[str], field_mapping: Dict[str, dict], progress_callback: Callable = None, stage_name: str = "Parsing") -> List[dict]:
+def _read_claims(lines: Iterable[str], field_mapping: Dict[str, dict]) -> List[dict]:
     claims = []
-    total_lines = len(lines)
-    
     for line_num, line in enumerate(lines, 1):
         if line.startswith('4'):
             claim = parse_claim_with_mapping(line, field_mapping)
             if claim:
                 claim['Line_Number'] = line_num
                 claims.append(claim)
-
-        if progress_callback and line_num % 100 == 0:
-            progress = line_num / total_lines
-            progress_callback(progress, f"{stage_name}: Row {line_num} of {total_lines}")
-            
     return claims
 
-def _compare_claims(base_claims: List[dict], validation_claims: List[dict], field_mapping: Dict[str, dict], progress_callback: Callable = None) -> Tuple[List[dict], List[Tuple[int, dict]], List[Tuple[int, dict]], dict, List[str]]:
-    base_lookup = {create_record_signature(claim): (idx, claim) for idx, claim in enumerate(base_claims)}
-    validation_lookup = {create_record_signature(claim): (idx, claim) for idx, claim in enumerate(validation_claims)}
+
+def _compare_claims(rxe_claims: List[dict], adhoc_claims: List[dict], field_mapping: Dict[str, dict]) -> Tuple[List[dict], List[Tuple[int, dict]], List[Tuple[int, dict]], dict, List[str]]:
+    rxe_lookup = {create_record_signature(claim): (idx, claim) for idx, claim in enumerate(rxe_claims)}
+    adhoc_lookup = {create_record_signature(claim): (idx, claim) for idx, claim in enumerate(adhoc_claims)}
 
     value_differences = []
-    missing_in_validation = []
-    extra_in_validation = []
-    
-    total_to_compare = len(base_lookup)
-    
-    signature_fields = {
-            'RX CLAIMS NUMBER',
-            'CLAIM STATUS',
-            'SEQUENCE NUMBER OF CLAIM',
-            'PATIENT FIRST NAME',
-            'PATIENT LAST NAME',
-            'PATIENT DATE OF BIRTH',
-        }
-    
-    compare_fields = [field for field in field_mapping.keys() if field not in signature_fields]
-    
-    for i, signature in enumerate(base_lookup):
-        base_idx, base_claim = base_lookup[signature]
-        
-        if progress_callback and i % 50 == 0:
-            progress = (i + 1) / total_to_compare
-            progress_callback(progress, f"Comparing: Record {i+1} of {total_to_compare}")
+    missing_in_adhoc = []
+    extra_in_adhoc = []
 
-        if signature in validation_lookup:
-            _, validation_claim = validation_lookup[signature]
+    signature_fields = {
+        'RX CLAIMS NUMBER',
+        'CLAIM STATUS',
+        'SEQUENCE NUMBER OF CLAIM',
+        'PATIENT FIRST NAME',
+        'PATIENT LAST NAME',
+        'PATIENT DATE OF BIRTH',
+    }
+
+    compare_fields = [field for field in field_mapping.keys() if field not in signature_fields]
+
+    for signature in rxe_lookup:
+        rxe_idx, rxe_claim = rxe_lookup[signature]
+
+        if signature in adhoc_lookup:
+            _, adhoc_claim = adhoc_lookup[signature]
 
             for field in compare_fields:
-                base_val = base_claim.get(field, '')
-                validation_val = validation_claim.get(field, '')
+                rxe_val = rxe_claim.get(field, '')
+                adhoc_val = adhoc_claim.get(field, '')
 
-                if base_val != validation_val:
-                    base_exact = base_claim.get('_raw_exact', {}).get(field, '')
-                    validation_exact = validation_claim.get('_raw_exact', {}).get(field, '')
-                    if base_exact == validation_exact:
+                if rxe_val != adhoc_val:
+                    rxe_exact = rxe_claim.get('_raw_exact', {}).get(field, '')
+                    adhoc_exact = adhoc_claim.get('_raw_exact', {}).get(field, '')
+                    if rxe_exact == adhoc_exact:
                         continue
 
-                    base_raw = base_claim.get('_raw', {}).get(field, base_val)
-                    validation_raw = validation_claim.get('_raw', {}).get(field, validation_val)
+                    rxe_raw = rxe_claim.get('_raw', {}).get(field, rxe_val)
+                    adhoc_raw = adhoc_claim.get('_raw', {}).get(field, adhoc_val)
+
                     value_differences.append({
-                        'Rx_Number': base_claim.get('PRESCRIPTION /SERVICE REFERENCE NUMBER', ''),
-                        'Rx_Claims_Number': base_claim.get('RX CLAIMS NUMBER', ''),
-                        'Claim_Status': base_claim.get('CLAIM STATUS', ''),
-                        'Sequence_Number_Of_Claim': base_claim.get('SEQUENCE NUMBER OF CLAIM', ''),
-                        'Patient_First': base_claim.get('PATIENT FIRST NAME', ''),
-                        'Patient_Last': base_claim.get('PATIENT LAST NAME', ''),
-                        'Patient_DOB': base_claim.get('PATIENT DATE OF BIRTH', ''),
-                        'Date_Of_Service': base_claim.get('DATE OF SERVICE', ''),
-                        'Drug': base_claim.get('PRODUCT LABEL NAME WITH DOSAGE FORM AND STRENGTH', ''),
+                        'Rx_Number': rxe_claim.get('PRESCRIPTION /SERVICE REFERENCE NUMBER', ''),
+                        'Rx_Claims_Number': rxe_claim.get('RX CLAIMS NUMBER', ''),
+                        'Claim_Status': rxe_claim.get('CLAIM STATUS', ''),
+                        'Sequence_Number_Of_Claim': rxe_claim.get('SEQUENCE NUMBER OF CLAIM', ''),
+                        'Patient_First': rxe_claim.get('PATIENT FIRST NAME', ''),
+                        'Patient_Last': rxe_claim.get('PATIENT LAST NAME', ''),
+                        'Patient_DOB': rxe_claim.get('PATIENT DATE OF BIRTH', ''),
+                        'Date_Of_Service': rxe_claim.get('DATE OF SERVICE', ''),
+                        'Drug': rxe_claim.get('PRODUCT LABEL NAME WITH DOSAGE FORM AND STRENGTH', ''),
                         'Field': field,
-                        'Correct_Base': base_raw,
-                        'Wrong_Validation': validation_raw
+                        'Correct_RxE': rxe_raw,
+                        'Wrong_ADHOC': adhoc_raw
                     })
         else:
-            missing_in_validation.append((base_idx + 1, base_claim))
-    for signature in validation_lookup:
-        if signature not in base_lookup:
-            validation_idx, validation_claim = validation_lookup[signature]
-            extra_in_validation.append((validation_idx + 1, validation_claim))
+            missing_in_adhoc.append((rxe_idx + 1, rxe_claim))
+
+    for signature in adhoc_lookup:
+        if signature not in rxe_lookup:
+            adhoc_idx, adhoc_claim = adhoc_lookup[signature]
+            extra_in_adhoc.append((adhoc_idx + 1, adhoc_claim))
 
     differences_by_field = {}
     for diff in value_differences:
         field = diff['Field']
         differences_by_field.setdefault(field, []).append(diff)
 
-    return value_differences, missing_in_validation, extra_in_validation, differences_by_field, compare_fields 
+    return value_differences, missing_in_adhoc, extra_in_adhoc, differences_by_field, compare_fields
 
 
 def generate_excel_report(
     mapping_stream: io.TextIOBase,
-    base_stream: io.TextIOBase,
-    validation_stream: io.TextIOBase,
-    timestamp: str | None = None,
-    progress_callback: Callable = None
+    rxe_stream: io.TextIOBase,
+    adhoc_stream: io.TextIOBase,
+    timestamp: str | None = None
 ) -> Tuple[bytes, dict]:
-    
+    logger.info("Generating validation report")
     field_mapping = _load_field_mapping(mapping_stream)
-    
-    base_lines = base_stream.readlines()
-    val_lines = validation_stream.readlines()
-
-    base_claims = _read_claims(base_lines, field_mapping, progress_callback, "Parsing Base File")
-    validation_claims = _read_claims(val_lines, field_mapping, progress_callback, "Parsing Validation File")
+    rxe_claims = _read_claims(rxe_stream, field_mapping)
+    adhoc_claims = _read_claims(adhoc_stream, field_mapping)
+    logger.info("Parsed %s RxE claims and %s SSE claims", len(rxe_claims), len(adhoc_claims))
 
     (
         value_differences,
-        missing_in_validation,
-        extra_in_validation,
+        missing_in_adhoc,
+        extra_in_adhoc,
         differences_by_field,
         _
-    ) = _compare_claims(base_claims, validation_claims, field_mapping, progress_callback)
-
-    if progress_callback:
-        progress_callback(0.95, "Generating Excel Workbook...")
+    ) = _compare_claims(rxe_claims, adhoc_claims, field_mapping)
 
     wb = Workbook()
 
@@ -302,7 +334,7 @@ def generate_excel_report(
     ws_summary['A1'].font = Font(bold=True, size=14)
     ws_summary.merge_cells('A1:B1')
 
-    ws_summary['A2'] = 'Legacy File Format - Base as Reference'
+    ws_summary['A2'] = 'CHF 7.0 Format - RxE as Reference'
     ws_summary['A2'].font = Font(italic=True, size=10)
     ws_summary.merge_cells('A2:B2')
 
@@ -314,13 +346,13 @@ def generate_excel_report(
     ws_summary['B4'].font = header_font
 
     summary_data = [
-        ['Total Claims in Base (Reference)', len(base_claims)],
-        ['Total Claims in Validation', len(validation_claims)],
+        ['Total Claims in RxE_Test (Reference)', len(rxe_claims)],
+        ['Total Claims in ADHOC (Validation)', len(adhoc_claims)],
         ['', ''],
         ['Total Field Value Differences', len(value_differences)],
         ['Number of Different Fields', len(differences_by_field)],
-        ['Missing Claims in Validation', len(missing_in_validation)],
-        ['Extra Claims in Validation', len(extra_in_validation)],
+        ['Missing Claims in ADHOC', len(missing_in_adhoc)],
+        ['Extra Claims in ADHOC', len(extra_in_adhoc)],
     ]
 
     row = 5
@@ -367,7 +399,7 @@ def generate_excel_report(
         headers = [
             'Rx Claims Number', 'Claim Status', 'Sequence Number of Claim',
             'Patient First Name', 'Patient Last Name', 'Patient Date of Birth',
-            'Date of Service', 'Correct Value (Base)', 'Incorrect Value (Validation)'
+            'Date of Service', 'Correct Value (RxE)', 'Incorrect Value (ADHOC)'
         ]
 
         for col, header in enumerate(headers, 1):
@@ -395,13 +427,13 @@ def generate_excel_report(
             cell_h = ws_field.cell(row=row, column=7, value=diff.get('Date_Of_Service', ''))
             cell_h.number_format = '@'
 
-            base_cell = ws_field.cell(row=row, column=8, value=diff['Correct_Base'])
-            base_cell.fill = highlight_fill
-            base_cell.number_format = '@'
+            rxe_cell = ws_field.cell(row=row, column=8, value=diff['Correct_RxE'])
+            rxe_cell.fill = highlight_fill
+            rxe_cell.number_format = '@'
 
-            validation_cell = ws_field.cell(row=row, column=9, value=diff['Wrong_Validation'])
-            validation_cell.fill = highlight_fill
-            validation_cell.number_format = '@'
+            adhoc_cell = ws_field.cell(row=row, column=9, value=diff['Wrong_ADHOC'])
+            adhoc_cell.fill = highlight_fill
+            adhoc_cell.number_format = '@'
 
             row += 1
 
@@ -424,20 +456,17 @@ def generate_excel_report(
     wb.save(output)
     output.seek(0)
 
-    if progress_callback:
-        progress_callback(1.0, "Report Complete!")
-
     if not timestamp:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     summary = {
         'timestamp': timestamp,
-        'total_base': len(base_claims),
-        'total_validation': len(validation_claims),
+        'total_rxe': len(rxe_claims),
+        'total_sse': len(adhoc_claims),
         'total_differences': len(value_differences),
         'fields_with_differences': len(differences_by_field),
-        'missing_in_validation': len(missing_in_validation),
-        'extra_in_validation': len(extra_in_validation),
+        'missing_in_sse': len(missing_in_adhoc),
+        'extra_in_sse': len(extra_in_adhoc),
     }
-    
+
     return output.getvalue(), summary
