@@ -475,7 +475,92 @@ def generate_excel_report(
 
 def main():
     st.set_page_config(page_title="File Validator", layout="wide")
-    st.title("Claims Validation Report Generator")
+    
+    # Initialize session state for theme
+    if "dark_mode" not in st.session_state:
+        st.session_state.dark_mode = True
+    
+    # Header with title and theme toggle
+    col1, col2 = st.columns([0.85, 0.15])
+    
+    with col1:
+        st.title("Claims Validation Report Generator")
+    
+    with col2:
+        # Icon button toggle for theme (avoids checkbox DOM hacks)
+        button_label = "🌙" if st.session_state.dark_mode else "☀️"
+        if st.button(button_label, key="theme_button", help="Toggle dark mode"):
+            st.session_state.dark_mode = not st.session_state.dark_mode
+
+        # Keep header compact but avoid global .stButton overrides
+        # (No global compact CSS here to prevent shrinking other buttons)
+    
+    # Apply theme-specific styling — target Streamlit app container and use !important
+    if st.session_state.dark_mode:
+        st.markdown("""
+        <style>
+        /* Main app background and text */
+        .stApp, .stApp .main, .block-container {
+            background-color: #0e1117 !important;
+            color: #c9d1d9 !important;
+        }
+        /* Metric cards */
+        .stMetric, .stMetricValue {
+            background-color: #161b22 !important;
+            color: #c9d1d9 !important;
+            padding: 10px !important;
+            border-radius: 6px !important;
+        }
+        /* Buttons and download */
+        button, .stButton>button, .stDownloadButton>button {
+            background-color: #1f6feb !important;
+            color: #ffffff !important;
+            border: none !important;
+            padding: 8px 14px !important;
+            font-weight: 600 !important;
+            box-shadow: 0 4px 10px rgba(31,111,235,0.18) !important;
+            border-radius: 8px !important;
+            transition: transform .08s ease-in-out, box-shadow .12s ease-in-out !important;
+        }
+        .stButton>button:hover { transform: translateY(-1px) !important; }
+        .stDownloadButton>button { background-color: transparent !important; color: inherit !important; box-shadow: none !important; }
+        /* Make tables and cells readable */
+        table, th, td {
+            color: #c9d1d9 !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <style>
+        .stApp, .stApp .main, .block-container {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+        }
+        .stMetric, .stMetricValue {
+            background-color: #f5f5f5 !important;
+            color: #000000 !important;
+            padding: 10px !important;
+            border-radius: 6px !important;
+        }
+        button, .stButton>button, .stDownloadButton>button {
+            background-color: #e6eef8 !important;
+            color: #000000 !important;
+            border: none !important;
+            padding: 8px 14px !important;
+            font-weight: 600 !important;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.04) !important;
+            border-radius: 8px !important;
+            transition: transform .08s ease-in-out, box-shadow .12s ease-in-out !important;
+        }
+        .stButton>button:hover { transform: translateY(-1px) !important; }
+        .stDownloadButton>button { background-color: transparent !important; color: inherit !important; box-shadow: none !important; }
+        table, th, td {
+            color: #000000 !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+    
     st.markdown("---")
     
     st.markdown("""
@@ -500,13 +585,17 @@ def main():
         base_file = st.file_uploader("Upload Base File", type=["txt"], key="base")
     
     with col3:
-        st.subheader("📄 ADHOC (Adhoc)")
+        st.subheader("📄 ADHOC")
         adhoc_file = st.file_uploader("Upload ADHOC File", type=["txt"], key="adhoc")
     
     st.markdown("---")
     
-    # Generate report button
-    if st.button("🚀 Generate Report", type="primary", use_container_width=True):
+    # Generate report button (centered)
+    col_l, col_c, col_r = st.columns([1, 2, 1])
+    with col_c:
+        generate_pressed = st.button("🚀 Generate Report", type="primary", use_container_width=True, key="generate_report")
+
+    if generate_pressed:
         if not all([mapping_file, base_file, adhoc_file]):
             st.error("❌ Please upload all three files before generating the report.")
             return
