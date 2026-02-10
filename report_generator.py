@@ -233,8 +233,8 @@ def _read_claims(lines: Iterable[str], field_mapping: Dict[str, dict]) -> List[d
     return claims
 
 
-def _compare_claims(rxe_claims: List[dict], adhoc_claims: List[dict], field_mapping: Dict[str, dict]) -> Tuple[List[dict], List[Tuple[int, dict]], List[Tuple[int, dict]], dict, List[str]]:
-    rxe_lookup = {create_record_signature(claim): (idx, claim) for idx, claim in enumerate(rxe_claims)}
+def _compare_claims(base_claims: List[dict], adhoc_claims: List[dict], field_mapping: Dict[str, dict]) -> Tuple[List[dict], List[Tuple[int, dict]], List[Tuple[int, dict]], dict, List[str]]:
+    base_lookup = {create_record_signature(claim): (idx, claim) for idx, claim in enumerate(base_claims)}
     adhoc_lookup = {create_record_signature(claim): (idx, claim) for idx, claim in enumerate(adhoc_claims)}
 
     value_differences = []
@@ -252,44 +252,44 @@ def _compare_claims(rxe_claims: List[dict], adhoc_claims: List[dict], field_mapp
 
     compare_fields = [field for field in field_mapping.keys() if field not in signature_fields]
 
-    for signature in rxe_lookup:
-        rxe_idx, rxe_claim = rxe_lookup[signature]
+    for signature in base_lookup:
+        base_idx, base_claim = base_lookup[signature]
 
         if signature in adhoc_lookup:
             _, adhoc_claim = adhoc_lookup[signature]
 
             for field in compare_fields:
-                rxe_val = rxe_claim.get(field, '')
+                base_val = base_claim.get(field, '')
                 adhoc_val = adhoc_claim.get(field, '')
 
-                if rxe_val != adhoc_val:
-                    rxe_exact = rxe_claim.get('_raw_exact', {}).get(field, '')
+                if base_val != adhoc_val:
+                    base_exact = base_claim.get('_raw_exact', {}).get(field, '')
                     adhoc_exact = adhoc_claim.get('_raw_exact', {}).get(field, '')
-                    if rxe_exact == adhoc_exact:
+                    if base_exact == adhoc_exact:
                         continue
 
-                    rxe_raw = rxe_claim.get('_raw', {}).get(field, rxe_val)
+                    base_raw = base_claim.get('_raw', {}).get(field, base_val)
                     adhoc_raw = adhoc_claim.get('_raw', {}).get(field, adhoc_val)
 
                     value_differences.append({
-                        'Rx_Number': rxe_claim.get('PRESCRIPTION /SERVICE REFERENCE NUMBER', ''),
-                        'Rx_Claims_Number': rxe_claim.get('RX CLAIMS NUMBER', ''),
-                        'Claim_Status': rxe_claim.get('CLAIM STATUS', ''),
-                        'Sequence_Number_Of_Claim': rxe_claim.get('SEQUENCE NUMBER OF CLAIM', ''),
-                        'Patient_First': rxe_claim.get('PATIENT FIRST NAME', ''),
-                        'Patient_Last': rxe_claim.get('PATIENT LAST NAME', ''),
-                        'Patient_DOB': rxe_claim.get('PATIENT DATE OF BIRTH', ''),
-                        'Date_Of_Service': rxe_claim.get('DATE OF SERVICE', ''),
-                        'Drug': rxe_claim.get('PRODUCT LABEL NAME WITH DOSAGE FORM AND STRENGTH', ''),
+                        'Rx_Number': base_claim.get('PRESCRIPTION /SERVICE REFERENCE NUMBER', ''),
+                        'Rx_Claims_Number': base_claim.get('RX CLAIMS NUMBER', ''),
+                        'Claim_Status': base_claim.get('CLAIM STATUS', ''),
+                        'Sequence_Number_Of_Claim': base_claim.get('SEQUENCE NUMBER OF CLAIM', ''),
+                        'Patient_First': base_claim.get('PATIENT FIRST NAME', ''),
+                        'Patient_Last': base_claim.get('PATIENT LAST NAME', ''),
+                        'Patient_DOB': base_claim.get('PATIENT DATE OF BIRTH', ''),
+                        'Date_Of_Service': base_claim.get('DATE OF SERVICE', ''),
+                        'Drug': base_claim.get('PRODUCT LABEL NAME WITH DOSAGE FORM AND STRENGTH', ''),
                         'Field': field,
-                        'Correct_RxE': rxe_raw,
+                        'Correct_Base': base_raw,
                         'Wrong_ADHOC': adhoc_raw
                     })
         else:
-            missing_in_adhoc.append((rxe_idx + 1, rxe_claim))
+            missing_in_adhoc.append((base_idx + 1, base_claim))
 
     for signature in adhoc_lookup:
-        if signature not in rxe_lookup:
+        if signature not in base_lookup:
             adhoc_idx, adhoc_claim = adhoc_lookup[signature]
             extra_in_adhoc.append((adhoc_idx + 1, adhoc_claim))
 
@@ -303,15 +303,15 @@ def _compare_claims(rxe_claims: List[dict], adhoc_claims: List[dict], field_mapp
 
 def generate_excel_report(
     mapping_stream: io.TextIOBase,
-    rxe_stream: io.TextIOBase,
+    base_stream: io.TextIOBase,
     adhoc_stream: io.TextIOBase,
     timestamp: str | None = None
 ) -> Tuple[bytes, dict]:
     logger.info("Generating validation report")
     field_mapping = _load_field_mapping(mapping_stream)
-    rxe_claims = _read_claims(rxe_stream, field_mapping)
+    base_claims = _read_claims(base_stream, field_mapping)
     adhoc_claims = _read_claims(adhoc_stream, field_mapping)
-    logger.info("Parsed %s RxE claims and %s SSE claims", len(rxe_claims), len(adhoc_claims))
+    logger.info("Parsed %s Base claims and %s Adhoc claims", len(base_claims), len(adhoc_claims))
 
     (
         value_differences,
@@ -319,7 +319,7 @@ def generate_excel_report(
         extra_in_adhoc,
         differences_by_field,
         _
-    ) = _compare_claims(rxe_claims, adhoc_claims, field_mapping)
+    ) = _compare_claims(base_claims, adhoc_claims, field_mapping)
 
     wb = Workbook()
 
@@ -330,11 +330,11 @@ def generate_excel_report(
     ws_summary = wb.active
     ws_summary.title = "Summary"
 
-    ws_summary['A1'] = 'SSE CLAIMS VALIDATION REPORT'
+    ws_summary['A1'] = 'Adhoc CLAIMS VALIDATION REPORT'
     ws_summary['A1'].font = Font(bold=True, size=14)
     ws_summary.merge_cells('A1:B1')
 
-    ws_summary['A2'] = 'CHF 7.0 Format - RxE as Reference'
+    ws_summary['A2'] = 'CHF 7.0 Format - Base as Reference'
     ws_summary['A2'].font = Font(italic=True, size=10)
     ws_summary.merge_cells('A2:B2')
 
@@ -346,7 +346,7 @@ def generate_excel_report(
     ws_summary['B4'].font = header_font
 
     summary_data = [
-        ['Total Claims in RxE_Test (Reference)', len(rxe_claims)],
+        ['Total Claims in Base_Test (Reference)', len(base_claims)],
         ['Total Claims in ADHOC (Validation)', len(adhoc_claims)],
         ['', ''],
         ['Total Field Value Differences', len(value_differences)],
@@ -399,7 +399,7 @@ def generate_excel_report(
         headers = [
             'Rx Claims Number', 'Claim Status', 'Sequence Number of Claim',
             'Patient First Name', 'Patient Last Name', 'Patient Date of Birth',
-            'Date of Service', 'Correct Value (RxE)', 'Incorrect Value (ADHOC)'
+            'Date of Service', 'Correct Value (Base)', 'Incorrect Value (ADHOC)'
         ]
 
         for col, header in enumerate(headers, 1):
@@ -427,9 +427,9 @@ def generate_excel_report(
             cell_h = ws_field.cell(row=row, column=7, value=diff.get('Date_Of_Service', ''))
             cell_h.number_format = '@'
 
-            rxe_cell = ws_field.cell(row=row, column=8, value=diff['Correct_RxE'])
-            rxe_cell.fill = highlight_fill
-            rxe_cell.number_format = '@'
+            base_cell = ws_field.cell(row=row, column=8, value=diff['Correct_Base'])
+            base_cell.fill = highlight_fill
+            base_cell.number_format = '@'
 
             adhoc_cell = ws_field.cell(row=row, column=9, value=diff['Wrong_ADHOC'])
             adhoc_cell.fill = highlight_fill
@@ -461,12 +461,12 @@ def generate_excel_report(
 
     summary = {
         'timestamp': timestamp,
-        'total_rxe': len(rxe_claims),
-        'total_sse': len(adhoc_claims),
+        'total_base': len(base_claims),
+        'total_adhoc': len(adhoc_claims),
         'total_differences': len(value_differences),
         'fields_with_differences': len(differences_by_field),
-        'missing_in_sse': len(missing_in_adhoc),
-        'extra_in_sse': len(extra_in_adhoc),
+        'missing_in_adhoc': len(missing_in_adhoc),
+        'extra_in_adhoc': len(extra_in_adhoc),
     }
 
     return output.getvalue(), summary

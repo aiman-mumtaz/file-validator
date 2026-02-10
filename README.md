@@ -11,7 +11,6 @@ This project provides a reusable framework to compare fixed-width file outputs b
 
 ### Tech Stack
 •⁠  ⁠Python
-•⁠  ⁠Pandas
 •⁠  ⁠Streamlit
 •⁠  ⁠OpenPyXL
 
@@ -20,8 +19,10 @@ This project provides a reusable framework to compare fixed-width file outputs b
 
 1. Install dependencies:
    - `pip install -r requirements.txt`
+2. Update current shell to use venv's Python and packages
+   - `source .venv/bin/activate`
 2. Start the UI:
-   - `streamlit run app.py`
+   - `python -m streamlit run app.py`
 
 ## How to use the application
 
